@@ -390,8 +390,6 @@ func verifyMetrics(infPoolName string, numTargetPorts int) {
 
 	metricsURL := fmt.Sprintf("http://localhost:%d/metrics", getMetricsPort())
 
-	startEPPMetricsPortForward()
-
 	theMetrics := getMetrics(metricsURL)
 	gomega.Expect(theMetrics).ShouldNot(gomega.BeEmpty())
 	metricsAsString := strings.Join(theMetrics, "\n")

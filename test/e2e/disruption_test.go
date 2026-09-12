@@ -14,8 +14,6 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-
-	testutils "github.com/llm-d/llm-d-router/test/utils"
 )
 
 const (
@@ -63,20 +61,15 @@ func podGone(podName string, nsName string, minRemaining int) func() bool {
 }
 
 // eppPodReady returns true when a new EPP pod (not oldPodName) is Running and Ready.
-func eppPodReady(oldPodName string, nsName string) func() bool {
+func eppPodReady(oldPodName string, nsName string, selector map[string]string) func() bool {
 	return func() bool {
-		pods := getPods(map[string]string{"app": "e2e-epp"}, nsName)
+		pods := getPods(selector, nsName)
 		for _, p := range pods {
 			if p.Name == oldPodName {
 				continue
 			}
-			if p.Status.Phase != corev1.PodRunning {
-				continue
-			}
-			for _, c := range p.Status.Conditions {
-				if c.Type == corev1.PodReady && c.Status == corev1.ConditionTrue {
-					return true
-				}
+			if readyRouterPod(&p) {
+				return true
 			}
 		}
 		return false
@@ -101,10 +94,8 @@ var _ = ginkgo.Describe("Disruption tests", func() {
 		ginkgo.It("should recover and route to surviving pods", func() {
 			nsName := getNamespace()
 
-			infPoolObjects := createInferencePool(1)
-
-			modelServers := createModelServersDecode(2)
-			epp := createEndPointPicker(simpleConfig)
+			createModelServersDecode(2)
+			createStandaloneRouter(simpleConfig, 1, 8000)
 
 			prefillPods, decodePods := getModelServerPods(podSelector, prefillSelector, decodeSelector, nsName)
 			gomega.Expect(prefillPods).Should(gomega.BeEmpty())
@@ -146,10 +137,6 @@ var _ = ginkgo.Describe("Disruption tests", func() {
 			ginkgo.By("Verifying requests succeed consistently after recovery")
 			gomega.Eventually(completionRoutedToNamespace, eppRecoveryTimeout, 1*time.Second).WithArguments(nsName).
 				MustPassRepeatedly(3).Should(gomega.Succeed())
-
-			testutils.DeleteObjects(testConfig, infPoolObjects, nsName)
-			testutils.DeleteObjects(testConfig, modelServers, nsName)
-			testutils.DeleteObjects(testConfig, epp, nsName)
 		})
 	}))
 
@@ -157,11 +144,9 @@ var _ = ginkgo.Describe("Disruption tests", func() {
 		ginkgo.It("should not hang and should recover routing", func() {
 			nsName := getNamespace()
 
-			infPoolObjects := createInferencePool(1)
+			createModelServersDecode(2)
 
-			modelServers := createModelServersDecode(2)
-
-			epp := createEndPointPicker(simpleConfig)
+			createStandaloneRouter(simpleConfig, 1, 8000)
 
 			prefillPods, decodePods := getModelServerPods(podSelector, prefillSelector, decodeSelector, nsName)
 			gomega.Expect(prefillPods).Should(gomega.BeEmpty())
@@ -204,10 +189,6 @@ var _ = ginkgo.Describe("Disruption tests", func() {
 			ginkgo.By("Verifying requests succeed consistently after recovery")
 			gomega.Eventually(completionRoutedToNamespace, eppRecoveryTimeout, 1*time.Second).WithArguments(nsName).
 				MustPassRepeatedly(3).Should(gomega.Succeed())
-
-			testutils.DeleteObjects(testConfig, infPoolObjects, nsName)
-			testutils.DeleteObjects(testConfig, modelServers, nsName)
-			testutils.DeleteObjects(testConfig, epp, nsName)
 		})
 	}))
 
@@ -215,11 +196,9 @@ var _ = ginkgo.Describe("Disruption tests", func() {
 		ginkgo.It("should return 503 to the client", func() {
 			nsName := getNamespace()
 
-			infPoolObjects := createInferencePool(1)
-
 			modelServers := createModelServersDecode(1)
 
-			epp := createEndPointPicker(simpleConfig)
+			createStandaloneRouter(simpleConfig, 1, 8000)
 
 			_, decodePods := getModelServerPods(podSelector, prefillSelector, decodeSelector, nsName)
 			gomega.Expect(decodePods).Should(gomega.HaveLen(1))
@@ -254,10 +233,6 @@ var _ = ginkgo.Describe("Disruption tests", func() {
 				nsHdr, _, _ := runCompletion(simplePrompt, simModelName)
 				return nsHdr
 			}, eppRecoveryTimeout, 2*time.Second).Should(gomega.Equal(nsName))
-
-			testutils.DeleteObjects(testConfig, infPoolObjects, nsName)
-			testutils.DeleteObjects(testConfig, modelServers, nsName)
-			testutils.DeleteObjects(testConfig, epp, nsName)
 		})
 	}))
 
@@ -265,18 +240,16 @@ var _ = ginkgo.Describe("Disruption tests", func() {
 		ginkgo.It("should recover and resume routing after restart", func() {
 			nsName := getNamespace()
 
-			infPoolObjects := createInferencePool(1)
+			createModelServersDecode(1)
 
-			modelServers := createModelServersDecode(1)
-
-			epp := createEndPointPicker(simpleConfig)
+			router := createStandaloneRouter(simpleConfig, 1, 8000)
 
 			ginkgo.By("Verifying requests succeed before EPP disruption")
 			nsHdr, _, _ := runCompletion(simplePrompt, simModelName)
 			gomega.Expect(nsHdr).Should(gomega.Equal(getNamespace()))
 
 			ginkgo.By("Finding EPP pod")
-			eppPods := getPods(map[string]string{"app": "e2e-epp"}, nsName)
+			eppPods := getPods(router.selector, nsName)
 			gomega.Expect(eppPods).Should(gomega.HaveLen(1))
 			eppPodName := eppPods[0].Name
 
@@ -294,7 +267,7 @@ var _ = ginkgo.Describe("Disruption tests", func() {
 				"requests should fail while EPP is down")
 
 			ginkgo.By("Waiting for EPP to recover")
-			gomega.Eventually(eppPodReady(eppPodName, nsName), readyTimeout, 2*time.Second).Should(gomega.BeTrue())
+			gomega.Eventually(eppPodReady(eppPodName, nsName, router.selector), readyTimeout, 2*time.Second).Should(gomega.BeTrue())
 
 			ginkgo.By("Verifying requests succeed after EPP recovery")
 			gomega.Eventually(func() error {
@@ -307,10 +280,6 @@ var _ = ginkgo.Describe("Disruption tests", func() {
 				}
 				return nil
 			}, eppRecoveryTimeout, 2*time.Second).Should(gomega.Succeed())
-
-			testutils.DeleteObjects(testConfig, infPoolObjects, nsName)
-			testutils.DeleteObjects(testConfig, modelServers, nsName)
-			testutils.DeleteObjects(testConfig, epp, nsName)
 		})
 	}))
 
@@ -318,11 +287,9 @@ var _ = ginkgo.Describe("Disruption tests", func() {
 		ginkgo.It("should return 503s when empty and recover when scaled back", func() {
 			nsName := getNamespace()
 
-			infPoolObjects := createInferencePool(1)
-
 			modelServers := createModelServersDecode(1)
 
-			epp := createEndPointPicker(simpleConfig)
+			createStandaloneRouter(simpleConfig, 1, 8000)
 
 			ginkgo.By("Verifying requests succeed before disruption")
 			nsHdr, _, _ := runCompletion(simplePrompt, simModelName)
@@ -362,10 +329,6 @@ var _ = ginkgo.Describe("Disruption tests", func() {
 			<-done
 
 			ginkgo.By(fmt.Sprintf("Traffic results: %d successes, %d failures", tc.successes(), tc.failures()))
-
-			testutils.DeleteObjects(testConfig, infPoolObjects, nsName)
-			testutils.DeleteObjects(testConfig, modelServers, nsName)
-			testutils.DeleteObjects(testConfig, epp, nsName)
 		})
 	}))
 

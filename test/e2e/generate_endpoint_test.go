@@ -11,8 +11,6 @@ import (
 	"github.com/google/uuid"
 	"github.com/onsi/ginkgo/v2"
 	"github.com/onsi/gomega"
-
-	testutils "github.com/llm-d/llm-d-router/test/utils"
 )
 
 const (
@@ -57,11 +55,10 @@ var _ = ginkgo.Describe("Direct gateway /inference/v1/generate encode against en
 	// directly to encode pods without requiring a decode stage first.
 	ginkgo.It("returns ec_transfer_params for encode bodies", func() {
 		nsName := getNamespace()
-		infPoolObjects := createInferencePool(1)
 
 		encodeReplicas := 1
-		modelServers := createModelServersEncodeOnly(encodeReplicas)
-		epp := createEndPointPicker(generateEncodeConfig)
+		createModelServersEncodeOnly(encodeReplicas)
+		createStandaloneRouter(generateEncodeConfig, 1, 8000)
 
 		encodePods := getPodNames(encodeSelector, nsName)
 		gomega.Expect(encodePods).Should(gomega.HaveLen(encodeReplicas))
@@ -81,10 +78,6 @@ var _ = ginkgo.Describe("Direct gateway /inference/v1/generate encode against en
 				expectECTransferParams(parsed, raw)
 			}
 		}
-
-		testutils.DeleteObjects(testConfig, epp, nsName)
-		testutils.DeleteObjects(testConfig, modelServers, nsName)
-		testutils.DeleteObjects(testConfig, infPoolObjects, nsName)
 	})
 }))
 
@@ -93,11 +86,10 @@ var _ = ginkgo.Describe("Direct gateway /inference/v1/generate prefill against p
 	// directly to prefill pods without requiring a decode stage first.
 	ginkgo.It("returns kv_transfer_params for prefill bodies", func() {
 		nsName := getNamespace()
-		infPoolObjects := createInferencePool(1)
 
 		prefillReplicas := 1
-		modelServers := createModelServersPrefillOnly(prefillReplicas)
-		epp := createEndPointPicker(generatePrefillConfig)
+		createModelServersPrefillOnly(prefillReplicas)
+		createStandaloneRouter(generatePrefillConfig, 1, 8000)
 
 		prefillPods := getPodNames(prefillSelector, nsName)
 		gomega.Expect(prefillPods).Should(gomega.HaveLen(prefillReplicas))
@@ -109,10 +101,6 @@ var _ = ginkgo.Describe("Direct gateway /inference/v1/generate prefill against p
 			parsed := expectGenerateOK(resp, raw)
 			expectKVTransferParams(parsed, raw)
 		}
-
-		testutils.DeleteObjects(testConfig, epp, nsName)
-		testutils.DeleteObjects(testConfig, modelServers, nsName)
-		testutils.DeleteObjects(testConfig, infPoolObjects, nsName)
 	})
 }))
 
@@ -258,12 +246,11 @@ var _ = ginkgo.Describe("P/D gateway /inference/v1/generate disaggregates via si
 	// disaggregatedPrefillHandler rather than the decoder catch-all.
 	ginkgo.It("routes token-in generate to the prefill pod", func() {
 		nsName := getNamespace()
-		infPoolObjects := createInferencePool(1)
 
 		prefillReplicas := 1
 		decodeReplicas := 1
-		modelServers := createModelServersPDSharedStorage(decodeReplicas)
-		epp := createEndPointPicker(pdConfig)
+		createModelServersPDSharedStorage(decodeReplicas)
+		createStandaloneRouter(pdConfig, 1, 8000)
 
 		prefillPods, decodePods := getModelServerPods(podSelector, prefillSelector, decodeSelector, nsName)
 		gomega.Expect(prefillPods).Should(gomega.HaveLen(prefillReplicas))
@@ -283,10 +270,6 @@ var _ = ginkgo.Describe("P/D gateway /inference/v1/generate disaggregates via si
 		gomega.Expect(prefillCountAfter).To(gomega.BeNumerically(">", prefillCountBefore),
 			"prefill pod should have received the generate request; sidecar must route "+
 				"/inference/v1/generate through disaggregatedPrefillHandler, not the decoder catch-all")
-
-		testutils.DeleteObjects(testConfig, epp, nsName)
-		testutils.DeleteObjects(testConfig, modelServers, nsName)
-		testutils.DeleteObjects(testConfig, infPoolObjects, nsName)
 	})
 }))
 
