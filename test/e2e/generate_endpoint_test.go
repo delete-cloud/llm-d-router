@@ -11,6 +11,9 @@ import (
 	"github.com/google/uuid"
 	"github.com/onsi/ginkgo/v2"
 	"github.com/onsi/gomega"
+
+	"github.com/llm-d/llm-d-router/test/e2e/utils"
+	"github.com/llm-d/llm-d-router/test/e2e/utils/standalone"
 )
 
 const (
@@ -58,9 +61,9 @@ var _ = ginkgo.Describe("Direct gateway /inference/v1/generate encode against en
 
 		encodeReplicas := 1
 		createModelServersEncodeOnly(encodeReplicas)
-		createStandaloneRouter(generateEncodeConfig, 1, 8000)
+		standalone.Create(standaloneConfig(), generateEncodeConfig, 1, 8000)
 
-		encodePods := getPodNames(encodeSelector, nsName)
+		encodePods := utils.GetPodNames(testConfig, encodeSelector, nsName)
 		gomega.Expect(encodePods).Should(gomega.HaveLen(encodeReplicas))
 
 		for _, modality := range mmModalities {
@@ -89,9 +92,9 @@ var _ = ginkgo.Describe("Direct gateway /inference/v1/generate prefill against p
 
 		prefillReplicas := 1
 		createModelServersPrefillOnly(prefillReplicas)
-		createStandaloneRouter(generatePrefillConfig, 1, 8000)
+		standalone.Create(standaloneConfig(), generatePrefillConfig, 1, 8000)
 
-		prefillPods := getPodNames(prefillSelector, nsName)
+		prefillPods := utils.GetPodNames(testConfig, prefillSelector, nsName)
 		gomega.Expect(prefillPods).Should(gomega.HaveLen(prefillReplicas))
 
 		tokenIDs := []int{1, 32000, 32000, 32000, 32000, 32000, 32000, 32000, 32000, 2345, 6789}
@@ -250,13 +253,13 @@ var _ = ginkgo.Describe("P/D gateway /inference/v1/generate disaggregates via si
 		prefillReplicas := 1
 		decodeReplicas := 1
 		createModelServersPDSharedStorage(decodeReplicas)
-		createStandaloneRouter(pdConfig, 1, 8000)
+		standalone.Create(standaloneConfig(), pdConfig, 1, 8000)
 
-		prefillPods, decodePods := getModelServerPods(podSelector, prefillSelector, decodeSelector, nsName)
+		prefillPods, decodePods := utils.GetModelServerPods(testConfig, podSelector, prefillSelector, decodeSelector, nsName)
 		gomega.Expect(prefillPods).Should(gomega.HaveLen(prefillReplicas))
 		gomega.Expect(decodePods).Should(gomega.HaveLen(decodeReplicas))
 
-		prefillCountBefore := getPodRequestCount(nsName, prefillPods[0])
+		prefillCountBefore := utils.GetPodRequestCount(testConfig, nsName, prefillPods[0])
 		ginkgo.By(fmt.Sprintf("prefill request count before test: %d", prefillCountBefore))
 
 		ginkgo.By("sending /inference/v1/generate through P/D EPP")
@@ -264,7 +267,7 @@ var _ = ginkgo.Describe("P/D gateway /inference/v1/generate disaggregates via si
 		gomega.Expect(resp.StatusCode).To(gomega.Equal(http.StatusOK),
 			"non-200 from gateway: status=%d body=%s", resp.StatusCode, string(raw))
 
-		prefillCountAfter := getPodRequestCount(nsName, prefillPods[0])
+		prefillCountAfter := utils.GetPodRequestCount(testConfig, nsName, prefillPods[0])
 		ginkgo.By(fmt.Sprintf("prefill request count after test: %d", prefillCountAfter))
 
 		gomega.Expect(prefillCountAfter).To(gomega.BeNumerically(">", prefillCountBefore),

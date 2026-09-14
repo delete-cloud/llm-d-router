@@ -10,7 +10,7 @@ Each case renders the repository's `config/charts/llm-d-router-standalone` chart
 The chart supplies the InferencePool, plugin configuration, Services, and RBAC. Model simulators,
 disaggregation sidecars, and the shared renderer use the development Kustomize manifests.
 
-`standalone-values.yaml` supplies the test resource requests, experimental plugin flags, unauthenticated
+`utils/standalone/standalone-values.yaml` supplies the test resource requests, experimental plugin flags, unauthenticated
 metrics, and KV event port. Each case supplies its plugin configuration, EPP image, replica count,
 and model target ports. The suite creates all rendered objects before waiting for readiness.
 With three EPP replicas, exactly one router Pod must be Ready and two must remain standbys.
@@ -115,5 +115,5 @@ inside the builder, run:
 
 ```sh
 helm dependency build --skip-refresh config/charts/llm-d-router-standalone
-go test ./test/e2e -run '^TestStandalone' -count=1
+go test ./test/e2e/utils/... -count=1
 ```

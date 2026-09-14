@@ -10,8 +10,26 @@ import (
 	"github.com/onsi/gomega"
 
 	"github.com/llm-d/llm-d-router/pkg/sidecar/proxy"
+	"github.com/llm-d/llm-d-router/test/e2e/utils"
+	"github.com/llm-d/llm-d-router/test/e2e/utils/standalone"
 	testutils "github.com/llm-d/llm-d-router/test/utils"
 )
+
+// standaloneConfig passes the suite's per-process settings to the standalone
+// router helpers.
+func standaloneConfig() standalone.Config {
+	return standalone.Config{
+		TestConfig:    testConfig,
+		Namespace:     getNamespace(),
+		EPPImage:      eppImage,
+		HTTPPort:      getPort(),
+		MetricsPort:   getMetricsPort(),
+		K8sContext:    k8sContext,
+		PodSelector:   podSelector,
+		ReleaseName:   poolName,
+		KeepOnFailure: keepClusterOnFailure,
+	}
+}
 
 func createModelServersFromKustomize(kustomizeDir string, extra map[string]string) []string {
 	nsName := getNamespace()
@@ -37,21 +55,21 @@ func createModelServersFromKustomize(kustomizeDir string, extra map[string]strin
 		subs[k] = v
 	}
 
-	manifests := runKustomize(kustomizeDir)
-	manifests = substituteMany(manifests, subs)
+	manifests := utils.RunKustomize(kustomizeDir)
+	manifests = utils.SubstituteMany(manifests, subs)
 	// Remove labels with empty values (produced when ${DECODE_ROLE} is empty)
-	manifests = removeEmptyLabels(manifests)
-	manifests = removeEmptyArgs(manifests)
-	objects, err := decodeCaseObjects([]byte(strings.Join(manifests, "\n---\n")), nsName)
+	manifests = utils.RemoveEmptyLabels(manifests)
+	manifests = utils.RemoveEmptyArgs(manifests)
+	objects, err := utils.DecodeCaseObjects([]byte(strings.Join(manifests, "\n---\n")), nsName)
 	gomega.Expect(err).NotTo(gomega.HaveOccurred())
-	resources := &caseResources{client: testConfig.K8sClient}
-	deferCaseCleanup(resources, nsName, nil)
-	gomega.Expect(resources.create(testConfig.Context, objects)).To(gomega.Succeed())
+	resources := &utils.CaseResources{Client: testConfig.K8sClient}
+	utils.DeferCaseCleanup(testConfig, keepClusterOnFailure, resources, nsName, nil)
+	gomega.Expect(resources.Create(testConfig.Context, objects)).To(gomega.Succeed())
 	names := make([]string, len(objects))
 	for i, obj := range objects {
 		names[i] = obj.GetKind() + "/" + obj.GetName()
 	}
-	podsInDeploymentsReady(nsName, names)
+	utils.PodsInDeploymentsReady(testConfig, nsName, names)
 	return names
 }
 
@@ -145,14 +163,14 @@ func createModelServersEPDUnified(replicas int) []string {
 }
 
 func createRender(nsName string) []string {
-	renderYamls := substituteMany(testutils.ReadYaml(renderManifest),
+	renderYamls := utils.SubstituteMany(testutils.ReadYaml(renderManifest),
 		map[string]string{
 			"${MODEL_NAME}":        kvModelName,
 			"${VLLM_RENDER_IMAGE}": vllmRenderImage,
 			"${VLLM_RENDER_PORT}":  vllmRenderPort,
 		})
 	objects := testutils.CreateObjsFromYaml(testConfig, renderYamls, nsName)
-	podsInDeploymentsReady(nsName, objects)
+	utils.PodsInDeploymentsReady(testConfig, nsName, objects)
 	return objects
 }
 

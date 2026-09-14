@@ -1,4 +1,4 @@
-package e2e
+package standalone
 
 import (
 	"context"
@@ -7,17 +7,42 @@ import (
 	"strings"
 	"testing"
 
-	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
-	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
-	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/client/fake"
-	infextv1 "sigs.k8s.io/gateway-api-inference-extension/api/v1"
 )
+
+const (
+	poolName = "food-review-inference-pool"
+	eppName  = poolName + "-epp"
+
+	simpleConfig = `apiVersion: llm-d.ai/v1alpha1
+kind: EndpointPickerConfig
+plugins:
+- type: approx-prefix-cache-producer
+  parameters:
+    maxPrefixTokensToMatch: 16384
+    lruCapacityPerServer: 256
+- type: prefix-cache-scorer
+- type: decode-filter
+- type: max-score-picker
+- type: single-profile-handler
+schedulingProfiles:
+- name: default
+  plugins:
+  - pluginRef: decode-filter
+  - pluginRef: max-score-picker
+  - pluginRef: prefix-cache-scorer
+    weight: 2
+`
+)
+
+var podSelector = map[string]string{"app": poolName}
+
+func testConfig(namespace, image string) Config {
+	return Config{Namespace: namespace, EPPImage: image, PodSelector: podSelector, ReleaseName: poolName}
+}
 
 func TestStandaloneChart(t *testing.T) {
 	for _, tc := range []struct {
@@ -32,7 +57,7 @@ func TestStandaloneChart(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			image := "registry.example:5000/team/router:dev"
-			router, err := renderStandaloneRouter(context.Background(), tc.namespace, image, simpleConfig, tc.replicas, tc.ports)
+			router, err := renderRouter(context.Background(), testConfig(tc.namespace, image), simpleConfig, tc.replicas, tc.ports)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -111,11 +136,11 @@ func TestStandaloneChart(t *testing.T) {
 				}
 			}
 			picker, _, _ := unstructured.NestedString(pool.Object, "spec", "endpointPickerRef", "name")
-			if picker != eppName || router.poolName != poolName {
-				t.Fatalf("pool or EPP service identity changed: %s, %s", router.poolName, picker)
+			if picker != eppName || router.PoolName != poolName {
+				t.Fatalf("pool or EPP service identity changed: %s, %s", router.PoolName, picker)
 			}
 			service := router.accessService(tc.namespace, 30080, 32090)
-			if !reflect.DeepEqual(service.Spec.Selector, router.selector) || service.Spec.Ports[0].NodePort != 30080 || service.Spec.Ports[1].NodePort != 32090 {
+			if !reflect.DeepEqual(service.Spec.Selector, router.Selector) || service.Spec.Ports[0].NodePort != 30080 || service.Spec.Ports[1].NodePort != 32090 {
 				t.Fatalf("invalid test access service: %+v", service.Spec)
 			}
 			ports, _, _ = unstructured.NestedSlice(objects["Service/"+eppName].Object, "spec", "ports")
@@ -140,7 +165,7 @@ func TestStandaloneImageValues(t *testing.T) {
 		{"localhost:5000/router", "localhost:5000", "router", "latest"},
 	} {
 		t.Run(tc.image, func(t *testing.T) {
-			image, err := standaloneImageValues(tc.image)
+			image, err := imageValues(tc.image)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -149,145 +174,8 @@ func TestStandaloneImageValues(t *testing.T) {
 			}
 		})
 	}
-	if _, err := standaloneImageValues("router@sha256:abcd"); err == nil {
+	if _, err := imageValues("router@sha256:abcd"); err == nil {
 		t.Fatal("digest images must fail explicitly because the chart requires a tag")
-	}
-}
-
-type failingCreateClient struct {
-	client.Client
-	failName string
-	created  []string
-	reads    int
-}
-
-func (c *failingCreateClient) Get(ctx context.Context, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
-	c.reads++
-	return c.Client.Get(ctx, key, obj, opts...)
-}
-
-func (c *failingCreateClient) List(ctx context.Context, list client.ObjectList, opts ...client.ListOption) error {
-	c.reads++
-	return c.Client.List(ctx, list, opts...)
-}
-
-func (c *failingCreateClient) Create(ctx context.Context, obj client.Object, opts ...client.CreateOption) error {
-	if obj.GetName() == c.failName {
-		return errors.New("injected create failure")
-	}
-	if err := c.Client.Create(ctx, obj, opts...); err != nil {
-		return err
-	}
-	c.created = append(c.created, obj.GetName())
-	return nil
-}
-
-func TestStandaloneCreatesAllResourcesBeforeWaiting(t *testing.T) {
-	ctx := context.Background()
-	scheme := runtime.NewScheme()
-	if err := clientgoscheme.AddToScheme(scheme); err != nil {
-		t.Fatal(err)
-	}
-	if err := infextv1.Install(scheme); err != nil {
-		t.Fatal(err)
-	}
-	cli := &failingCreateClient{Client: fake.NewClientBuilder().WithScheme(scheme).Build()}
-	resources := &caseResources{client: cli}
-	objects, err := decodeCaseObjects([]byte(`apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: router
-spec:
-  replicas: 3
----
-apiVersion: inference.networking.k8s.io/v1
-kind: InferencePool
-metadata:
-  name: router-pool
-`), "test")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := resources.create(ctx, objects); err != nil {
-		t.Fatal(err)
-	}
-	if cli.reads != 0 || !reflect.DeepEqual(cli.created, []string{"router", "router-pool"}) {
-		t.Fatalf("creation waited for the unready Deployment before creating dependencies: reads=%d created=%v", cli.reads, cli.created)
-	}
-}
-
-func TestStandalonePartialCreationCleanup(t *testing.T) {
-	ctx := context.Background()
-	scheme := runtime.NewScheme()
-	if err := clientgoscheme.AddToScheme(scheme); err != nil {
-		t.Fatal(err)
-	}
-	foreign := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "foreign", Namespace: "test"}}
-	for _, failure := range []string{"injected", "foreign"} {
-		t.Run(failure, func(t *testing.T) {
-			cli := &failingCreateClient{Client: fake.NewClientBuilder().WithScheme(scheme).WithObjects(foreign.DeepCopy()).Build(), failName: "injected"}
-			resources := &caseResources{client: cli}
-			obj := func(name string) *unstructured.Unstructured {
-				return &unstructured.Unstructured{Object: map[string]any{
-					"apiVersion": "v1", "kind": "ConfigMap", "metadata": map[string]any{"name": name, "namespace": "test"},
-				}}
-			}
-			if err := resources.create(ctx, []*unstructured.Unstructured{obj("owned"), obj(failure), obj("unattempted")}); err == nil {
-				t.Fatal("expected create failure")
-			}
-			if !reflect.DeepEqual(cli.created, []string{"owned"}) || len(resources.created) != 1 {
-				t.Fatalf("creation continued after failure: %v", cli.created)
-			}
-			if err := resources.delete(ctx); err != nil {
-				t.Fatal(err)
-			}
-			deleted, err := resources.deleted(ctx)
-			if err != nil || !deleted {
-				t.Fatalf("created resources were not cleaned up: %t, %v", deleted, err)
-			}
-			if err := cli.Get(ctx, types.NamespacedName{Namespace: "test", Name: "foreign"}, &corev1.ConfigMap{}); err != nil {
-				t.Fatalf("cleanup affected the preexisting object: %v", err)
-			}
-		})
-	}
-}
-
-func TestStandaloneCleanupWaitsForPods(t *testing.T) {
-	ctx := context.Background()
-	scheme := runtime.NewScheme()
-	if err := clientgoscheme.AddToScheme(scheme); err != nil {
-		t.Fatal(err)
-	}
-	deployment := &appsv1.Deployment{
-		TypeMeta:   metav1.TypeMeta{APIVersion: "apps/v1", Kind: "Deployment"},
-		ObjectMeta: metav1.ObjectMeta{Name: "router", Namespace: "test", UID: "deployment"},
-		Spec:       appsv1.DeploymentSpec{Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"router": "owned"}}},
-	}
-	oldPod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{
-		Name: "old-router", Namespace: "test", Labels: map[string]string{"router": "owned"},
-		DeletionTimestamp: &metav1.Time{Time: metav1.Now().Time}, Finalizers: []string{"test.example/hold"},
-	}}
-	cli := fake.NewClientBuilder().WithScheme(scheme).WithObjects(deployment, oldPod).Build()
-	obj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(deployment)
-	if err != nil {
-		t.Fatal(err)
-	}
-	resources := &caseResources{client: cli, created: []*unstructured.Unstructured{{Object: obj}}}
-	if err := resources.delete(ctx); err != nil {
-		t.Fatal(err)
-	}
-	if deleted, err := resources.deleted(ctx); deleted || err != nil {
-		t.Fatalf("cleanup must wait for terminating router Pods: %t, %v", deleted, err)
-	}
-	if err := cli.Get(ctx, client.ObjectKeyFromObject(oldPod), oldPod); err != nil {
-		t.Fatal(err)
-	}
-	oldPod.Finalizers = nil
-	if err := cli.Update(ctx, oldPod); err != nil {
-		t.Fatal(err)
-	}
-	if deleted, err := resources.deleted(ctx); !deleted || err != nil {
-		t.Fatalf("cleanup did not finish after router Pod deletion: %t, %v", deleted, err)
 	}
 }
 
@@ -325,19 +213,19 @@ func TestStandaloneReadyLeader(t *testing.T) {
 		{"no leader", []corev1.Pod{standby, standby, standby}, 3, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := standaloneReadyLeader(tc.pods, tc.replicas)
+			_, err := readyLeader(tc.pods, tc.replicas)
 			if (err != nil) != tc.wantErr {
 				t.Fatalf("readiness error = %v, wantErr = %t", err, tc.wantErr)
 			}
 		})
 	}
 	leader.DeletionTimestamp = &metav1.Time{Time: metav1.Now().Time}
-	if _, err := standaloneReadyLeader([]corev1.Pod{leader}, 1); err == nil {
+	if _, err := readyLeader([]corev1.Pod{leader}, 1); err == nil {
 		t.Fatal("terminating leader must not be Ready")
 	}
 	leader = readyTestRouterPod("leader", true)
 	leader.Status.ContainerStatuses[0].Ready = false
-	if _, err := standaloneReadyLeader([]corev1.Pod{leader}, 1); err == nil {
+	if _, err := readyLeader([]corev1.Pod{leader}, 1); err == nil {
 		t.Fatal("unready Envoy must not be Ready")
 	}
 }

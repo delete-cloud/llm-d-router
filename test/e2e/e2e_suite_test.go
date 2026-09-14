@@ -23,6 +23,7 @@ import (
 
 	infextv1a2 "github.com/llm-d/llm-d-router/apix/v1alpha2"
 	"github.com/llm-d/llm-d-router/pkg/epp/util/env"
+	"github.com/llm-d/llm-d-router/test/e2e/utils"
 	testutils "github.com/llm-d/llm-d-router/test/utils"
 )
 
@@ -33,8 +34,6 @@ const (
 	eppName = simModelName + "-inference-pool-epp"
 	// defaultReadyTimeout is the default timeout for a resource to report a ready state.
 	defaultReadyTimeout = 3 * time.Minute
-	// defaultInterval is the default interval to check if a resource exists or ready conditions.
-	defaultInterval = time.Millisecond * 250
 	// crdKustomizePath is the kustomize path for all CRDs (upstream GIE + local llm-d.ai).
 	crdKustomizePath = "../../config/crd"
 	// simModelName is the test model name.
@@ -79,7 +78,6 @@ var (
 	k8sContext = env.GetEnvString("K8S_CONTEXT", "", ginkgo.GinkgoLogr)
 
 	readyTimeout = env.GetEnvDuration("READY_TIMEOUT", defaultReadyTimeout, ginkgo.GinkgoLogr)
-	interval     = defaultInterval
 
 	crdObjects        []string
 	renderObjects     []string
@@ -279,7 +277,7 @@ func deleteNameSpace(nsName string) {
 
 // createCRDs creates the Inference Extension CRDs used for testing.
 func createCRDs() {
-	crds := runKustomize(crdKustomizePath)
+	crds := utils.RunKustomize(crdKustomizePath)
 	crdObjects = testutils.CreateObjsFromYaml(testConfig, crds, "")
 }
 
